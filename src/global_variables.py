@@ -1,4 +1,5 @@
-CHECK_INTERVAL_IN_SEC = 600
-TIME_CHECK_EMAIL = "Hollyyhw@gmail.com"
-TIME_CHECK_PASSWORD = "Hollyyihaowu6"
-CANADA_CITY_LIST = ["Calgary", "Ottawa", "Toronto", "Vancouver", "Halifax", "Montreal", "Quebec City"]
+CHECK_INTERVAL_IN_SEC = 30
+TIME_CHECK_EMAIL = "Jason2327265623@icloud.com"
+TIME_CHECK_PASSWORD = "Yaoqulang123@"
+CANADA_CITY_LIST = ["London", "Belfast"]
+CSV_FILE_PATH = "/root/autodl-tmp/visa_schedular/src/visa_users.csv"

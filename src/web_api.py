@@ -7,6 +7,8 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys 
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.common.exceptions import TimeoutException
+
 
 import csv
 import re
@@ -15,10 +17,11 @@ from datetime import datetime, timedelta
 from typing import Callable, Optional, Dict
 import global_variables as GBV
 import os
+import json
 
 
 def run_scheduled_function(scheduler:Callable, interval_in_sec:int, callable:Callable) -> None:
-    scheduler.enter(interval_in_sec, 1, run_scheduled_function, (scheduler, interval_in_sec, callable))
+    scheduler.enter(interval_in_sec, 1, run_scheduled_function, (scheduler, interval_in_sec, callable,))
     callable()
 
 def run_function_wrapper(interval_in_sec:int, callable:Callable) -> None:
@@ -26,9 +29,20 @@ def run_function_wrapper(interval_in_sec:int, callable:Callable) -> None:
     The function used directly by app.py
     """
     scheduler = sched.scheduler(time.time, time.sleep)
-    scheduler.enter(interval_in_sec, 1, run_scheduled_function, (scheduler, interval_in_sec, callable))
+    scheduler.enter(interval_in_sec, 1, run_scheduled_function, (scheduler, interval_in_sec, callable,))
     scheduler.run()
 
+def wait_loading(xpath, option="locate"):
+        try:
+            if option == "locate":
+                element_present = EC.presence_of_element_located((By.XPATH, xpath))
+            elif option == "clickable":
+                element_present = EC.element_to_be_clickable((By.XPATH, xpath))
+            WebDriverWait(self.driver, wait_timeout).until(element_present)
+        except TimeoutException:
+            print("Timed out waiting for page to load")
+            self.driver.execute_script("window.scrollTo(0, 1080)")
+            self.driver.save_screenshot("test.png")
 
 
 class VisaAppointment():
@@ -37,9 +51,15 @@ class VisaAppointment():
         self.chrome_options.add_argument("--headless")
         self.chrome_options.add_argument("--no-sandbox") # Recommended for running in CI/CD environments
         self.chrome_options.add_argument("--disable-dev-shm-usage") # Overcome limited resource problems
+        self.chrome_options.add_argument("--disable-gpu")        
+        # self.chrome_options.add_argument("blink-settings=imagesEnabled=false") # Overcome limited resource problems
+        self.chrome_options.page_load_strategy = 'normal'
 
-        self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=self.chrome_options) #need to install selenium and webdriver-manager
-        self.driver.get("https://ais.usvisa-info.com/en-ca/niv/users/sign_in") 
+        time1= time.time()
+        # self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=self.chrome_options) #need to install selenium and webdriver-manager
+        self.driver = webdriver.Chrome(service=Service('/usr/bin/chromedriver'), options=self.chrome_options) #need to install selenium and webdriver-manager
+        time2= time.time()
+        print(f"Chrome establish cost{time2-time1}s")      
         if not file_path:
             current_directory = os.getcwd()
             parent_directory = os.path.abspath(os.path.join(current_directory, os.pardir))
@@ -49,6 +69,7 @@ class VisaAppointment():
             file_path += "/visa_users.csv"
         self.file_path = file_path
         self.logged_in: bool = False
+        self.logged_in: bool = False        
         self.last_check_time: Optional[datetime] = None
         self.recent_available_dates: Dict[str, Optional[datetime]] = {city: None for city in GBV.CANADA_CITY_LIST}
         self.recent_available_city: Optional[str] = None #the city with most recent appointment date
@@ -59,8 +80,8 @@ class VisaAppointment():
         "restart when session fail"
         try:
             self.driver.quit()
-            self.driver = webdriver.Chrome(service=Service(ChromeDriverManager().install())) #need to install selenium and webdriver-manager
-            self.driver.get("https://ais.usvisa-info.com/en-ca/niv/users/sign_in")  
+            self.driver = webdriver.Chrome(service=Service('/usr/bin/chromedriver'), options=self.chrome_options) #need to install selenium and webdriver-manager
+            # self.driver.get("https://ais.usvisa-info.com/en-gb/niv/users/sign_in")  
         except:
             return
 
@@ -85,7 +106,7 @@ class VisaAppointment():
         return datetime.strptime(date_str, date_format)
 
     
-    def get_user_recent_appointment_date(self, email_str: str, password_str: str, log_out = True) -> Optional[str]:
+    def get_user_recent_appointment_date(self, email_str: str, password_str: str, log_out = False) -> Optional[str]:
         """
         get recent appointment date of the user the structure of date, Month, Year
         used when 
@@ -115,61 +136,77 @@ class VisaAppointment():
         """
         update recent available dates dict every certain minutes, stored value will be None if there's no available appointment 
         """
-        current_datetime = datetime.now()
-        # if just checked, return the stored value
-        if self.last_check_time and self.last_check_time + timedelta(minutes=GBV.CHECK_INTERVAL_IN_SEC/60) > current_datetime:
-            return
-        #recheck and update instead
-        self.last_check_time = current_datetime
-        self.login(GBV.TIME_CHECK_EMAIL, GBV.TIME_CHECK_PASSWORD)
-        if not self.logged_in:
-            return
-        
-        time.sleep(5)
-        continue_button = self.driver.find_element(By.PARTIAL_LINK_TEXT, "Continue")
-        continue_button.click()
+        def get_date():
+            current_datetime = datetime.now()
+            # if just checked, return the stored value
+            if self.last_check_time and self.last_check_time + timedelta(seconds=GBV.CHECK_INTERVAL_IN_SEC) > current_datetime:
+                return
+            #recheck and update instead
+            self.last_check_time = current_datetime
+            if not self.logged_in:
+                self.login(GBV.TIME_CHECK_EMAIL, GBV.TIME_CHECK_PASSWORD)
+                if not self.logged_in:
+                    return            
+                time.sleep(5)
+                continue_button = self.driver.find_element(By.PARTIAL_LINK_TEXT, "Continue")
+                continue_button.click()
 
-        base_url, _ = self.driver.current_url.rsplit('/', 1)
-        self.driver.get(base_url + "/payment")
-        valid_city = False
-        # Find all <tr> elements within the table
-        table_rows = self.driver.find_elements(By.XPATH, "//table[@class='for-layout']//tr")
-        # Iterate through the <tr> elements
-        for row in table_rows:
-            # Extract the <td> elements within the current row
-            cells = row.find_elements(By.TAG_NAME, "td")
-            if len(cells) == 2:
-                city_name = cells[0].text.strip()  # Extract the city name
-                date_text = cells[1].text.strip()   # Extract the date text
-                # Check if the date text is valid
-                if ',' in date_text:
-                    try:
-                        date_obj = self.str_to_datetime(date_text)
-                        self.recent_available_dates[city_name] = date_obj
-                        #compare, get the earliest one
-                        if self.recent_available_city == None or self.recent_available_dates[self.recent_available_city] > date_obj:
-                            self.recent_available_city = city_name
-                        valid_city = True
-                    except ValueError:
-                        if self.recent_available_dates[city_name] != None:
-                            self.recent_available_dates[city_name] = None
-                        pass
-        if not valid_city:
-            self.recent_available_city = None
-        # print(f"after the check, recent available city is {self.recent_available_city} with date {self.recent_available_dates[self.recent_available_city]}")
-        self.logout()
+            base_url, _ = self.driver.current_url.rsplit('/', 1)
+            self.driver.get(base_url + "/payment")
+            valid_city = False
+            # Find all <tr> elements within the table
+            table_rows = self.driver.find_elements(By.XPATH, "//table[@class='for-layout']//tr")
+            # Iterate through the <tr> elements
+            for row in table_rows:
+                # Extract the <td> elements within the current row
+                cells = row.find_elements(By.TAG_NAME, "td")
+                if len(cells) == 2:
+                    city_name = cells[0].text.strip()  # Extract the city name
+                    date_text = cells[1].text.strip()   # Extract the date text
+                    # Check if the date text is valid
+                    if ',' in date_text:
+                        try:
+                            date_obj = self.str_to_datetime(date_text)
+                            self.recent_available_dates[city_name] = date_obj
+                            #compare, get the earliest one
+                            if self.recent_available_city == None or self.recent_available_dates[self.recent_available_city] > date_obj:
+                                self.recent_available_city = city_name
+                            valid_city = True
+                        except ValueError:
+                            if self.recent_available_dates[city_name] != None:
+                                self.recent_available_dates[city_name] = None
+                            pass
+            if not valid_city:
+                self.recent_available_city = None
+            print(f"{datetime.now()}: latest INFO: available city: {self.recent_available_city}  Date: {self.recent_available_dates[self.recent_available_city]}")
+            # print(f"{self.recent_available_dates[self.recent_available_city]}")
+            # self.logout()
+        return get_date    
 
 
     def login(self, email_str: str, password_str: str) -> None:
         """
         the function log into user account given password and user email into AIS system
         """
+        cookie_list=[]
         #make sure on the right page
         try:
-            self.driver.get("https://ais.usvisa-info.com/en-ca/niv/users/sign_in") 
+            self.driver.get("https://ais.usvisa-info.com/en-gb/niv/users/sign_in")
+            #登录前cookie
+            cookiebefore=self.driver.get_cookies()[0]
+            cookie_list.append(cookiebefore)            
+            while True:
+                try:
+                    account = self.driver.find_element(By.XPATH, '//input[@type="email"]')
+                    break 
+                except:
+                    time.sleep(5)
+                    print(f"Nound found yet")              
             #account
-            account = self.driver.find_element(By.XPATH, '//input[@type="email"]')
+            # account = self.driver.find_element(By.XPATH, '//input[@type="email"]')
             account.send_keys(email_str)
+            cookie = self.driver.get_cookies()
+            # print(cookie)
             #password
             password = self.driver.find_element(By.XPATH, '//input[@type="password"]')
             password.send_keys(password_str)
@@ -180,12 +217,22 @@ class VisaAppointment():
             #submit
             continue_button = self.driver.find_element(By.XPATH, '//input[@type="submit" and @name="commit"]')
             continue_button.submit()
+            time.sleep(5)
+            #登录后cookie
+            cookie = self.driver.get_cookies()[0]
+            # 登录后cookie放到cookie_list列表中
+            cookie_list.append(cookie)
+            print(cookie_list)
+            with open("cookie.txt","w") as f:
+                json.dump(cookie_list,f)
             self.logged_in = True
+            print(f"Acount: {email_str} log in successful")
+
         except:
             print("log in not successful, please restart the process")
 
     def logout(self) -> None:
-        self.driver.get("https://ais.usvisa-info.com/en-ca/niv/users/sign_out")
+        self.driver.get("https://ais.usvisa-info.com/en-gb/niv/users/sign_out")
         self.logged_in = False
 
     def navigate_to_scheduler(self) -> None:
@@ -201,7 +248,7 @@ class VisaAppointment():
         base_url, _ = self.driver.current_url.rsplit('/', 1)
         self.driver.get(base_url + "/appointment")
         
-    def reschedule_for_a_user(self, email_str: str, password_str: str, csv_cur_apt_date_str: str) -> None:
+    def reschedule_for_a_user(self, email_str: str, password_str: str, csv_cur_expect_date_str: str) -> None:
         """
         reschedule a more recent appointment for user, supposedly only been called when this user is viable but there also exist a check for safety purpose
         """
@@ -209,17 +256,17 @@ class VisaAppointment():
         if not self.logged_in:
             return
         #check if available date is same as the one in csv file
-        web_cur_apt_date = self.str_to_datetime(self.get_user_recent_appointment_date(email_str, password_str, log_out=False))
-        csv_cur_apt_date = self.str_to_datetime(csv_cur_apt_date_str)
-        if web_cur_apt_date != csv_cur_apt_date:
-            self.logout()
-            return
-        if not self.recent_available_city or not self.recent_available_dates[self.recent_available_city]:
-            self.logout()
-            return
+        # web_cur_apt_date = self.str_to_datetime(self.get_user_recent_appointment_date(email_str, password_str, log_out=False))
+        csv_cur_expect_date = self.str_to_datetime(csv_cur_expect_date_str)
+        # if web_cur_apt_date != csv_cur_apt_date:
+        #     self.logout()
+        #     return
+        # if not self.recent_available_city or not self.recent_available_dates[self.recent_available_city]:
+        #     self.logout()
+        #     return
         
         recent_available_date = self.recent_available_dates[self.recent_available_city]
-        if recent_available_date < web_cur_apt_date: #double check
+        if recent_available_date < csv_cur_expect_date: #double check
             #reschedule
             self.navigate_to_scheduler()
 
@@ -292,15 +339,16 @@ class VisaAppointment():
             next(csv_reader, None)
             for row in csv_reader:
                 user_data.append(row)
+        print(user_data)        
         #update most recent dates
         self.check_recent_available_date()
         for data in user_data:
-            email, password, user_apt_date_str = data[0], data[1], data[2]
-            user_apt_date = self.str_to_datetime(user_apt_date_str)
+            email, password, user_expect_date_str = data[0], data[1], data[2]
+            user_expect_date = self.str_to_datetime(user_expect_date_str)
             recent_available_date = self.recent_available_dates[self.recent_available_city]
-            if recent_available_date and recent_available_date < user_apt_date:
+            if recent_available_date and recent_available_date < user_expect_date:
                 #update when there're earlier available dates
-                self.reschedule_for_a_user(email, password, user_apt_date_str)
+                self.reschedule_for_a_user(email, password, user_expect_date)
 
     def update_and_check_if_reschedule(self) -> None:
         """
@@ -309,4 +357,45 @@ class VisaAppointment():
         self.check_recent_available_date()
         self.reschedule_for_users()
         
-        
+    def login_from_cookie(self):
+        self.driver.get("https://ais.usvisa-info.com/en-gb/niv/users/sign_in")        
+        with open("cookie.txt","r") as f:
+            list_cookie=list(json.load(f))
+        for cookie in list_cookie:
+            self.driver.add_cookie(cookie_dict=cookie)
+        time.sleep(5)
+        self.driver.refresh()
+        print('当前浏览器地址为：.{0}'.format(self.driver.current_url))
+        self.driver.get("https://ais.usvisa-info.com/en-gb/niv/schedule/53731851payment")        
+        time.sleep(10)
+        while True:
+            try:
+                continue_button = self.driver.find_element(By.PARTIAL_LINK_TEXT, "Continue")
+                break 
+            except:
+                time.sleep(5)
+                print(f"Nound found yet")          
+    # def get_date_url(self, username, password):
+    #     wait_timeout = 80
+    #     time1 = time.time()
+    #     self.driver.get("https://ais.usvisa-info.com/en-gb/niv/users/sign_in")
+    #     print("****USER:%s --Start login......." %username, flush=True)
+    #     email_box = self.driver.find_element(By.ID,"user_email")
+    #     email_box.clear()
+    #     email_box.send_keys(username)
+    #     password_box = self.driver.find_element(By.ID,"user_password")
+    #     password_box.clear()
+    #     password_box.send_keys(password)
+    #     self.driver.execute_script("document.getElementById('policy_confirmed').click()")
+    #     signin_button = self.driver.find_element(By.NAME,"commit")
+    #     self.driver.find_element_by_class_name
+    #     signin_button.click()
+
+
+    #     # Continue
+    #     continue_button_xpath = "//a[contains(text(), 'Continue')]"
+    #     wait_loading(continue_button_xpath) 
+    #     time2 = time.time()
+    #     print(f"login cost{time2-time1}s")      
+
+    #     print("****USER:%s --Successfully login" %username, flush=True) 
